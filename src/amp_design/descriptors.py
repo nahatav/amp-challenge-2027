@@ -173,6 +173,36 @@ def _charge_at(sequences: list[str], ph: np.ndarray) -> np.ndarray:
     return charges
 
 
+# Monoisotopic-average residue masses (Da), for molecular weight.
+RESIDUE_MASS = {
+    "A": 71.0788, "C": 103.1388, "D": 115.0886, "E": 129.1155, "F": 147.1766,
+    "G": 57.0519, "H": 137.1411, "I": 113.1594, "K": 128.1741, "L": 113.1594,
+    "M": 131.1926, "N": 114.1038, "P": 97.1167, "Q": 128.1307, "R": 156.1875,
+    "S": 87.0782, "T": 101.1051, "V": 99.1326, "W": 186.2132, "Y": 163.1760,
+}
+WATER_MASS = 18.01528
+_MASS_VEC = np.array([RESIDUE_MASS[aa] for aa in AMINO_ACIDS], dtype=np.float64)
+
+
+def molecular_weight(sequences: list[str]) -> np.ndarray:
+    """Average molecular weight in Da (residue masses plus one water)."""
+    return np.array(
+        [_MASS_VEC[idx].sum() + WATER_MASS for idx in encode(sequences)],
+        dtype=np.float64,
+    )
+
+
+def ugml_to_um(mic_ugml: np.ndarray, sequences: list[str]) -> np.ndarray:
+    """Convert MIC in ug/ml to uM.
+
+    MIC[uM] = MIC[ug/ml] * 1000 / MW[g/mol]. Needed because the curated DBAASP
+    tables mix ug/ml and uM within the same column, and the competition reports
+    MIC in uM.
+    """
+    mw = molecular_weight(sequences)
+    return np.asarray(mic_ugml, dtype=np.float64) * 1000.0 / mw
+
+
 def descriptor_frame(sequences: list[str]) -> dict[str, np.ndarray]:
     """All descriptors at once, as a dict of arrays."""
     return {

@@ -155,17 +155,34 @@ data/              reference AMP database (from the organizers' starter kit)
 
 ## Training data
 
+Full disclosure, as required for co-authorship eligibility. Everything below is
+public and permissively licensed; no proprietary or non-public data is used.
+
+**Generator corpus**
 - `data/antibacterial.fasta` — 39,448 antibacterial peptides from the
   competition starter kit, derived from the MarLys AMP database (an aggregation
-  of AMPDB, APD, BaAMPs, CAMP, CancerPPD, DBAASP, DRAMP, InverPep, SATPdb, dbAMP).
-- DRAMP 4.0 general set — 1,964 sequences not already in the above.
-- GRAMPA (Witten & Witten) — 51,345 MIC measurements over 6,760 peptides, for
-  the MIC regressor.
-- HemoPI2 — 1,926 peptides with experimental HC50, for the haemolysis regressor.
-- UniProt reviewed peptides 8–50 aa without antimicrobial annotation, as
-  classifier negatives.
+  of AMPDB, APD, BaAMPs, CAMP, CancerPPD, DBAASP, DRAMP, InverPep, SATPdb,
+  dbAMP). CC-0.
+- DRAMP 4.0 general set (`dramp.cpu-bioinfor.org`) — 1,964 sequences not
+  already present in the above.
 
-All public and permissively licensed. No proprietary or non-public data is used.
+**MIC regressor**
+- GRAMPA (Witten & Witten 2019, `github.com/zswitten/Antimicrobial-Peptides`) —
+  51,345 MIC measurements over 6,760 peptides.
+- `szczurek-lab/battleamp-snakemake`, `data/activity/` — the organizing lab's
+  curated DBAASP activity tables for *E. coli*, *S. aureus*, *P. aeruginosa*,
+  *K. pneumoniae* and *A. baumannii*, plus strain-level MIC tables for
+  *E. coli* ATCC 25922 and *S. aureus* ATCC 25923. MIT-licensed.
+
+**HC50 regressor**
+- HemoPI2 (`raghavagps/hemopi2`) — 1,926 peptides with experimental HC50
+  against mammalian red blood cells.
+
+**Classifier negatives**
+- UniProt reviewed peptides 8–50 aa without antimicrobial annotation.
+- Synthetic negatives derived from the reference set: shuffled, 5-point-mutated,
+  and uniform-random sequences (construction follows OmegAMP).
+
 No sequence from the reference database is reproduced verbatim in the
 submission; exact matches are filtered before selection.
 

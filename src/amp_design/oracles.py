@@ -82,13 +82,26 @@ class OracleEnsemble:
     def amp_probability(self, X: np.ndarray) -> np.ndarray:
         return self.clf.predict_proba(X)[:, 1]
 
-    def predicted_pmic(self, X: np.ndarray, species: str) -> np.ndarray:
-        """log10(MIC / uM) for one species."""
+    def predicted_pmic(self, X: np.ndarray, species: str, chunk: int = 8192) -> np.ndarray:
+        """log10(MIC / uM) for one species.
+
+        Chunked because the species one-hot makes the design matrix wide (261
+        descriptors plus ~680 species columns). Scoring a 50,000-sequence
+        library in one block would allocate several hundred MB per species, ten
+        times over; chunking keeps the peak bounded without changing the result.
+        """
         n = X.shape[0]
-        Z = np.zeros((n, self.mic_n_features + len(self.mic_species)), dtype=np.float64)
-        Z[:, : self.mic_n_features] = X[:, : self.mic_n_features]
-        Z[:, self.mic_n_features + self._sp_index[species]] = 1.0
-        return self.mic_model.predict(Z)
+        width = self.mic_n_features + len(self.mic_species)
+        col = self.mic_n_features + self._sp_index[species]
+        out = np.empty(n, dtype=np.float64)
+
+        for start in range(0, n, chunk):
+            stop = min(start + chunk, n)
+            Z = np.zeros((stop - start, width), dtype=np.float64)
+            Z[:, : self.mic_n_features] = X[start:stop, : self.mic_n_features]
+            Z[:, col] = 1.0
+            out[start:stop] = self.mic_model.predict(Z)
+        return out
 
     def predicted_phc50(self, X: np.ndarray) -> np.ndarray:
         if self.hemo_model is None:
@@ -146,10 +159,20 @@ class OracleEnsemble:
 
         Weighting rationale: four of the five competition categories are
         activity-based (broad-spectrum, Gram-positive, Gram-negative, MDR) and
-        one is selectivity-based, so activity dominates. `amp_probability` acts
-        as a sanity gate — the MIC regressor was fit only on peptides that were
-        already believed active, so it extrapolates optimistically onto
-        non-AMP-like sequences, and the classifier is what catches those.
+        one is selectivity-based, so MIC-derived quantities dominate. This also
+        matches BATTLE-AMP (Szymczak et al. 2026, from the organizing lab),
+        whose first conclusion is that models trained on MIC data outperform
+        binary classifiers regardless of architecture.
+
+        `amp_probability` enters as a **multiplicative gate, not an additive
+        term**. Measured on GRAMPA: peptides with MIC <= 2 uM score 0.693 on our
+        classifier while peptides with MIC >= 64 uM score 0.760 — i.e. among
+        real AMPs the binary classifier is very slightly *anti*-correlated with
+        potency, because both groups are database AMPs. Adding it linearly would
+        reward the wrong thing. Its actual job is to catch sequences that are
+        not AMP-like at all, where the MIC regressor extrapolates optimistically
+        (it was fit only on peptides already believed active). A saturating gate
+        does that: it penalises the implausible and is indifferent above ~0.45.
         """
         p = profile if profile is not None else self.panel_profile(sequences)
 
@@ -157,14 +180,18 @@ class OracleEnsemble:
         # (0 to 2.5 log units, i.e. HC50/MIC50 from 1x to ~300x).
         sw = np.clip(p["safety_window"] / 2.5, 0.0, 1.0)
         # Penalise across-strain inconsistency: the random 25-peptide draw means
-        # variance is a real cost, and a peptide that is potent against only one
-        # species scores poorly on success rate anyway.
+        # variance is a real cost, and a peptide potent against only one species
+        # scores poorly on success rate anyway.
         consistency = 1.0 / (1.0 + p["pmic_spread"])
 
-        return (
-            0.40 * p["success_overall"]
-            + 0.20 * p["amp_probability"]
-            + 0.18 * sw
-            + 0.12 * consistency
-            + 0.10 * np.clip((1.5 - p["pmic50"]) / 2.5, 0.0, 1.0)
+        merit = (
+            0.52 * p["success_overall"]
+            + 0.22 * sw
+            + 0.14 * consistency
+            + 0.12 * np.clip((1.5 - p["pmic50"]) / 2.5, 0.0, 1.0)
         )
+
+        gate = 0.55 + 0.45 / (
+            1.0 + np.exp(-np.clip((p["amp_probability"] - 0.30) / 0.08, -40, 40))
+        )
+        return merit * gate

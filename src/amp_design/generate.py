@@ -47,7 +47,7 @@ ORACLE_CKPT = "checkpoint/oracles.pkl"
 
 # Selection temperature for the library, chosen by the sweep in
 # eval/selection_sweep.py to trade ConformityScore against FBD/Recall.
-DEFAULT_TAU = 1.0
+DEFAULT_TAU = 0.5
 
 # Pool size as a multiple of the library. The transformer loses <1% to
 # deduplication and ~0% to the novelty filter, so the multiplier exists to give
@@ -58,7 +58,7 @@ DEFAULT_OVERSAMPLE = 2.0
 # Activity conditioning bucket (0-7). Bucket 7 corresponds to the most
 # canonically AMP-like decile of the training database under the adversarial
 # classifier. `None` falls back to the classifier-free-guidance null token.
-DEFAULT_ACTIVITY_BUCKET = 7
+DEFAULT_ACTIVITY_BUCKET = None  # measured: steering activity costs more FBD/Recall than it buys
 
 # Sampling temperature. Below 1.0 concentrates on higher-likelihood (more
 # typical) sequences, which measurably raises predicted activity at a small

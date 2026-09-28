@@ -100,11 +100,17 @@ def select_library(
     larger `tau` concentrates toward the descriptor mode, buying ConformityScore
     at the cost of FBD/Recall.
     """
+    if n_select > len(pool):
+        raise ValueError(f"cannot select {n_select:,} from a pool of {len(pool):,}")
+
     if verbose:
         print(f"  scoring {len(pool):,} candidates by conformity density", flush=True)
     log_density = density.log_density(pool)
 
-    if tau == 0.0:
+    if n_select == len(pool):
+        # Nothing to select; `np.argpartition` would also reject kth == len.
+        idx = np.arange(len(pool))
+    elif tau == 0.0:
         idx = rng.choice(len(pool), size=n_select, replace=False)
     else:
         w = quantize(tau * log_density)
@@ -130,7 +136,7 @@ def select_top(
     oracles,
     *,
     top_k: int,
-    gate_size: int = 6000,
+    gate_size: int | None = None,
     shortlist_size: int = 2000,
     verbose: bool = True,
 ) -> tuple[list[str], dict]:
@@ -142,20 +148,25 @@ def select_top(
     success rate rather than on minimum predicted MIC, and enforce pairwise
     dissimilarity so a single wrong modelling assumption cannot sink the batch.
     """
-    # --- stage 1: cheap gate over the whole library ------------------------
-    potency = scoring.potency_prior(library)
-    selectivity = scoring.selectivity_prior(library)
-    synth = scoring.synthesizability(library)
-    cheap = 0.5 * potency + 0.2 * selectivity + 0.3 * synth
+    # --- stage 1: full oracle panel over the whole library -----------------
+    # An earlier version gated to 6,000 by a cheap physicochemical prior first.
+    # That was a false economy: featurising 50,000 sequences costs about two
+    # minutes and the gradient-boosted predictions are microseconds per row, so
+    # the whole library can be scored directly. Gating risked discarding strong
+    # candidates the crude prior happened to rank low, which matters because
+    # this list is what actually goes to the wet lab.
+    gated = library if gate_size is None else [
+        library[i] for i in stable_argsort(
+            0.5 * scoring.potency_prior(library)
+            + 0.2 * scoring.selectivity_prior(library)
+            + 0.3 * scoring.synthesizability(library),
+            library,
+        )[:min(gate_size, len(library))]
+    ]
 
-    gate_idx = stable_argsort(cheap, library)[:min(gate_size, len(library))]
-    gated = [library[i] for i in gate_idx]
     if verbose:
-        print(f"  gate: {len(gated):,} of {len(library):,} by physicochemical prior", flush=True)
-
-    # --- stage 2: full oracle panel on the gated set -----------------------
-    if verbose:
-        print("  running oracle panel (10 species x MIC, HC50, AMP classifier)", flush=True)
+        print(f"  running oracle panel on {len(gated):,} sequences "
+              f"(10 species x MIC, HC50, AMP classifier)", flush=True)
     profile = oracles.panel_profile(gated)
     composite = oracles.composite_rank_score(gated, profile)
 

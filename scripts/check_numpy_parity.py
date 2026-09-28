@@ -79,9 +79,41 @@ def main() -> int:
     print(f"  max |diff| = {diff.max():.3e}   mean = {diff.mean():.3e}")
     print(f"  argmax agreement = {(tl.argmax(-1) == nl.argmax(-1)).mean():.3f}")
 
-    # float32 weights upcast to float64: agreement to ~1e-4 is expected and is
-    # far coarser than the 1e-6 logit quantisation grid used when sampling.
+    # float32 weights upcast to float64: a few 1e-3 of disagreement is expected
+    # and does not affect which token is drawn.
     ok = diff.max() < 1e-2 and (tl.argmax(-1) == nl.argmax(-1)).all()
+    print("  torch/numpy parity:", "OK" if ok else "FAILED")
+
+    # --- KV cache vs full recompute ---------------------------------------
+    # Sampling drives `forward_step` with a cache; a cache bug would silently
+    # change the sampled distribution while still producing plausible peptides.
+    # This compares it against the full recompute on identical input.
+    B, T = 8, 12
+    rng = np.random.default_rng(0)
+    cond2 = condition_tokens(np.full(B, 3), np.full(B, 4), np.full(B, 4))
+    body = rng.integers(3, 23, size=(B, T))
+    tokens2 = np.concatenate([np.full((B, 1), BOS), body], axis=1)
+
+    full = np_model.forward(tokens2, cond2)
+
+    cache = np_model.new_cache(B, 60)
+    prefix = np.concatenate(
+        [np_model.w["cond.weight"][cond2],
+         np_model.w["tok.weight"][np.full((B, 1), BOS)]], axis=1
+    )
+    inc = np_model.forward_step(prefix, cache)
+    for t in range(T):
+        emb = np_model.w["tok.weight"][body[:, t]][:, None, :]
+        inc = np_model.forward_step(emb, cache)
+
+    cache_diff = np.abs(full - inc).max()
+    cache_ok = cache_diff < 1e-9
+    print(f"  KV cache vs full recompute: max |diff| = {cache_diff:.3e} "
+          f"({'OK' if cache_ok else 'MISMATCH'})")
+
+    # This is also the empirical determinism margin: float64 roundoff here is
+    # ~1e-14, against a 1e-6 logit quantisation grid used when sampling.
+    ok = ok and cache_ok
     print("PARITY OK" if ok else "PARITY FAILED")
     return 0 if ok else 1
 

@@ -177,6 +177,78 @@ def train_classifier(args, rng) -> dict:
     return {"model": clf, "metrics": metrics}
 
 
+def load_battleamp_mic(paths: list[str]) -> list[tuple[str, str, float]]:
+    """Read the organizers' curated DBAASP activity tables.
+
+    `szczurek-lab/battleamp-snakemake` ships per-species and per-strain activity
+    tables under `data/activity/`. They are useful for two reasons: they cover
+    the competition's panel species directly, and they are the organizing lab's
+    own curation, so the labelling conventions match what BATTLE-AMP benchmarks
+    against.
+
+    Unit handling, which is easy to get wrong: the `unit` column describes the
+    *original* `concentration` measurement and mixes uM and ug/ml. The derived
+    `MIC` / `activity` columns are **always ug/ml**, already normalised. Verified
+    directly: for RRWWWWRRW (MW 1574 Da) a row reading concentration 4, unit uM
+    has activity 6.29156, i.e. 4 uM x 1574 / 1000. Branching on `unit` would
+    therefore double-convert most rows. We read `MIC`/`activity` and convert
+    ug/ml -> uM once, because the competition reports MIC in uM.
+
+    Many rows are right-censored ("> 256"), i.e. the peptide was inactive up to
+    the highest concentration tested. We keep them at the censoring value: they
+    carry real information ("not active at this concentration"), and dropping
+    them would bias the regressor toward optimism.
+    """
+    import csv
+
+    from amp_design.descriptors import ugml_to_um
+
+    valid = set(AMINO_ACIDS)
+    species_from_file = {
+        "escherichiacoli": "E. coli",
+        "staphylococcusaureus": "S. aureus",
+        "pseudomonasaeruginosa": "P. aeruginosa",
+        "klebsiellapneumoniae": "K. pneumoniae",
+        "acinetobacterbaumannii": "A. baumannii",
+        "ecoli_atcc25922_mic": "E. coli",
+        "saureus_atcc25923_mic": "S. aureus",
+    }
+
+    out: list[tuple[str, str, float]] = []
+    for path in paths:
+        p = Path(path)
+        if not p.exists():
+            continue
+        species = species_from_file.get(p.stem)
+        if species is None:
+            continue
+
+        rows_ugml: list[tuple[str, float]] = []
+        for r in csv.DictReader(open(p, encoding="utf-8", errors="replace")):
+            seq = (r.get("sequence") or "").strip().upper()
+            if not (MIN_LENGTH <= len(seq) <= MAX_LENGTH) or not set(seq) <= valid:
+                continue
+            raw = r.get("MIC") or r.get("activity") or ""
+            try:
+                value = float(str(raw).replace(">", "").replace("<", "").strip())
+            except (TypeError, ValueError):
+                continue
+            if value <= 0:
+                continue
+            rows_ugml.append((seq, value))
+
+        if rows_ugml:
+            seqs = [s for s, _ in rows_ugml]
+            um = ugml_to_um(np.array([v for _, v in rows_ugml]), seqs)
+            for (s, _), v in zip(rows_ugml, um):
+                if v > 0:
+                    out.append((s, species, float(np.log10(v))))
+
+        print(f"    {p.name}: {len(rows_ugml):,} usable rows -> {species}")
+
+    return out
+
+
 def train_mic(args, rng) -> dict:
     import csv
 
@@ -200,7 +272,14 @@ def train_mic(args, rng) -> dict:
             continue
         recs.append((seq, r["bacterium"], val))
 
-    print(f"  usable MIC rows: {len(recs):,}")
+    print(f"  GRAMPA usable rows: {len(recs):,}")
+
+    if args.battleamp:
+        extra = load_battleamp_mic(args.battleamp)
+        print(f"  BATTLE-AMP rows: {len(extra):,}")
+        recs.extend(extra)
+
+    print(f"  total MIC rows: {len(recs):,}")
 
     # Collapse replicate measurements to the median per (sequence, species).
     agg: dict[tuple[str, str], list[float]] = defaultdict(list)
@@ -328,6 +407,15 @@ def main() -> None:
     parser.add_argument("--reference", default="data/antibacterial.fasta")
     parser.add_argument("--uniprot", default="../data/uniprot_neg.fasta")
     parser.add_argument("--grampa", default="../data/grampa.csv")
+    parser.add_argument("--battleamp", nargs="*", default=[
+        "../data/battleamp/escherichiacoli.csv",
+        "../data/battleamp/staphylococcusaureus.csv",
+        "../data/battleamp/pseudomonasaeruginosa.csv",
+        "../data/battleamp/klebsiellapneumoniae.csv",
+        "../data/battleamp/acinetobacterbaumannii.csv",
+        "../data/battleamp/ecoli_atcc25922_mic.csv",
+        "../data/battleamp/saureus_atcc25923_mic.csv",
+    ])
     parser.add_argument("--hemo-cv", default="../data/hemopi2_cv.csv")
     parser.add_argument("--hemo-ind", default="../data/hemopi2_ind.csv")
     parser.add_argument("--out", default="checkpoint/oracles.pkl")
