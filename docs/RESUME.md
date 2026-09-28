@@ -4,37 +4,42 @@ Paused for a wifi outage. Nothing network-dependent is running.
 
 ---
 
-## Live process
+## STOPPED — nothing is running
 
-**Generation run** — PID 28340, started 16:18 EDT.
-- Command: `uv run generate` in `submission/`, logging to `../generate_run.log`
-- Local compute only; **wifi loss cannot affect it**
-- At pause: round 1 of 4, ~31k/33k sampled. ETA ~20:40 EDT
-- Writes `generate/library.fasta` and `generate/top.fasta` only at the very end,
-  so an interrupted run leaves the previous (valid, committed) files intact
+All processes terminated cleanly for laptop shutdown. Verified: no python, no
+git, GPU at 0%.
 
-**To stop it:** `taskkill /PID 28340 /F`
-**To check it:** `tail -5 C:\Users\Valmi\amp-challenge\generate_run.log`
+The generation run (PID 28340) was stopped part-way through round 2 of 4. It
+writes its output only at the very end, so **the committed `generate/` files are
+untouched and still valid**: 50,000 library sequences + 100 top candidates,
+all compliance checks passing.
 
-If the machine sleeps or it is killed, just re-run `uv run generate` — the
-library is deterministic, so nothing is lost except wall-clock.
+Working tree is clean at `8f992a7`.
 
-A compliant, byte-reproducible submission is already committed in git
-(`fa500db`), so there is a working fallback regardless.
+### To restart the run
 
----
-
-## Armed waiter
-
-Background task `bjow9hr69` watches the log for `[6/6]` and then automatically:
-1. byte-compares the new `library.fasta` against the 12:40 run (determinism proof)
-2. runs `scripts/selfcheck.py` (full compliance)
-
-If the session is gone when you return, just run both manually:
 ```bash
 cd C:\Users\Valmi\amp-challenge\submission
+uv run generate
+```
+
+Takes roughly 4 hours (4 sampling rounds, ~65 min each). Nothing is lost by the
+interruption except wall-clock — the library is deterministic, so a fresh run
+reproduces exactly what the interrupted one would have produced.
+
+**What that run is for:** the committed top-100 was selected with the *buggy*
+similarity screen (worst ratio 0.783 against a 0.72 intended margin). It is
+still compliant — the hard limit is 0.80 — but 7 of its 100 entries would be
+rejected under the corrected screen. The re-run applies the fix. **So the
+current submission is valid and submittable as-is; the re-run improves it.**
+
+### Then verify
+
+```bash
 uv run python scripts/selfcheck.py --check-reproducibility
 ```
+
+Expect "ALL CHECKS PASSED" with worst similarity <= 0.72.
 
 ---
 
