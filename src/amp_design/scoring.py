@@ -57,14 +57,18 @@ class ConformityDensity:
         query = (np.stack([amph, chg], axis=1) - self.mean) / self.std
 
         h2 = 2.0 * self.bandwidth**2
-        ref_sq = (self.points**2).sum(axis=1)  # (n_ref,)
         out = np.empty(len(query), dtype=np.float64)
+        px, py = self.points[:, 0], self.points[:, 1]
 
         for start in range(0, len(query), block):
             chunk = query[start : start + block]
-            # ||a - b||^2 = ||a||^2 - 2 a.b + ||b||^2, avoiding an (n, m, d) tensor.
-            d2 = (chunk**2).sum(axis=1)[:, None] - 2.0 * (chunk @ self.points.T) + ref_sq[None, :]
-            np.maximum(d2, 0.0, out=d2)
+            # The descriptor space is 2-D, so squared distances can be written
+            # out elementwise. This avoids BLAS entirely: a matmul would make the
+            # result depend on the host's reduction order, and these values feed
+            # an argsort that decides library membership.
+            dx = chunk[:, 0][:, None] - px[None, :]
+            dy = chunk[:, 1][:, None] - py[None, :]
+            d2 = dx * dx + dy * dy
             m = -(d2 / h2)
             mx = m.max(axis=1, keepdims=True)
             out[start : start + block] = mx.squeeze(1) + np.log(np.exp(m - mx).sum(axis=1))
@@ -161,50 +165,78 @@ def selectivity_prior(sequences: list[str]) -> np.ndarray:
     )
 
 
+# Per-residue on-resin aggregation propensity during Fmoc-SPPS.
+# Signs follow the SHAP attributions of Pesciullesi et al., "Amino acid
+# composition drives aggregation during peptide synthesis" (Nature Chemistry,
+# 2026; ChemRxiv 2025), fitted on 539 peptides. Positive = drives aggregation.
+# Their headline result is that *composition* predicts aggregation better than
+# sequence order, so this enters as a composition-weighted sum rather than a
+# motif scan.
+AGGREGATION_PROPENSITY = {
+    # drivers: aliphatic and small polar side chains that pack into beta sheets
+    "S": 1.00, "I": 0.95, "V": 0.90, "T": 0.85, "Q": 0.70, "L": 0.60,
+    "A": 0.35, "G": 0.30, "N": 0.25, "M": 0.20, "E": 0.15, "K": 0.10, "W": 0.05,
+    # protective: aromatic, charged or conformationally disruptive
+    "F": -0.80, "D": -0.70, "Y": -0.65, "R": -0.60,
+    "C": -0.50, "H": -0.45, "P": -0.90,
+}
+
+
 def synthesizability(sequences: list[str]) -> np.ndarray:
     """Solid-phase-synthesis feasibility prior, in [0, 1].
 
-    The proposal scores "rate of sequences satisfying empirically derived
-    synthesizability constraints". Known Fmoc-SPPS failure modes:
-    long homopolymer runs, high beta-sheet propensity driving on-resin
-    aggregation, multiple cysteines, Asn-Gly / Asp-Gly deamidation and
-    aspartimide-prone motifs, and N-terminal glutamine cyclisation.
+    Phase 1 scores the "rate of sequences satisfying empirically derived
+    synthesizability constraints", and Phase 2 makes this consequential in a
+    harder way: the FAQ states that sequences which fail synthesis or QC are
+    **not retested**. A peptide that cannot be made scores as a dead slot in our
+    25-peptide draw, so this is a real term in the expected team average, not a
+    cosmetic filter.
+
+    Three contributions:
+
+    1. **Composition-driven aggregation** — weighted by the per-residue
+       propensities above.
+    2. **Chemical liabilities** — free cysteines (disulfide scrambling),
+       aspartimide-prone Asp-X and deamidation-prone Asn-Gly motifs,
+       N-terminal Gln (pyroglutamate formation).
+    3. **Homopolymer runs**, which cause difficult couplings independently of
+       composition.
     """
     n = len(sequences)
     scores = np.ones(n, dtype=np.float64)
 
     for i, seq in enumerate(sequences):
+        L = len(seq)
         penalty = 0.0
 
-        # Homopolymer runs.
-        run, longest = 1, 1
-        for a, b in zip(seq, seq[1:]):
-            run = run + 1 if a == b else 1
-            longest = max(longest, run)
-        if longest >= 4:
-            penalty += 0.12 * (longest - 3)
+        # 1. Composition-weighted aggregation propensity, normalised by length.
+        agg = sum(AGGREGATION_PROPENSITY.get(c, 0.0) for c in seq) / L
+        # agg ranges roughly [-0.9, 1.0]; only positive (aggregating) values hurt.
+        penalty += 0.55 * max(agg, 0.0)
 
-        # Cysteine count: >1 free Cys invites uncontrolled disulfide scrambling.
+        # 2. Chemical liabilities.
         n_cys = seq.count("C")
         if n_cys >= 2:
             penalty += 0.20 * (n_cys - 1)
         elif n_cys == 1:
             penalty += 0.05
-
-        # Aspartimide-prone and deamidation-prone dipeptides.
         for motif in ("DG", "DS", "DN", "NG"):
-            penalty += 0.05 * seq.count(motif)
-
-        # N-terminal Gln cyclises to pyroglutamate.
+            penalty += 0.04 * seq.count(motif)
         if seq.startswith("Q"):
             penalty += 0.08
 
-        # Beta-branched / aggregation-prone stretches.
-        window = 5
-        for j in range(len(seq) - window + 1):
-            chunk = seq[j : j + window]
-            if sum(c in "VITYFW" for c in chunk) >= 4:
-                penalty += 0.04
+        # 3. Homopolymer runs.
+        run, longest = 1, 1
+        for a, b in zip(seq, seq[1:]):
+            run = run + 1 if a == b else 1
+            longest = max(longest, run)
+        if longest >= 4:
+            penalty += 0.10 * (longest - 3)
+
+        # Length: coupling yield compounds, so a 45-mer is materially riskier
+        # than a 20-mer even with clean composition.
+        if L > 30:
+            penalty += 0.010 * (L - 30)
 
         scores[i] = max(0.0, 1.0 - penalty)
 

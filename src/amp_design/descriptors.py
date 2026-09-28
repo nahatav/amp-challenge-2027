@@ -111,10 +111,15 @@ def hydrophobic_moment(
         rads = np.deg2rad(angle) * np.arange(w)
         cos_w, sin_w = np.cos(rads), np.sin(rads)
 
-        # Vectorised sliding windows.
+        # Vectorised sliding windows. Deliberately an elementwise multiply plus a
+        # NumPy reduction rather than a matvec: BLAS chooses its reduction order
+        # from CPU vectorisation and thread count, so `views @ cos_w` can differ
+        # in the last ulps between machines. The competition regenerates our
+        # library on their hardware and compares it to ours, so every float in
+        # the generation path must be machine-independent.
         views = np.lib.stride_tricks.sliding_window_view(h, w)  # (n - w + 1, w)
-        vcos = views @ cos_w
-        vsin = views @ sin_w
+        vcos = (views * cos_w).sum(axis=1)
+        vsin = (views * sin_w).sum(axis=1)
         moments = np.sqrt(vcos**2 + vsin**2) / w
 
         out[i] = moments.mean() if modality == "mean" else moments.max()
