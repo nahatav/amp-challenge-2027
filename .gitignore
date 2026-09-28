@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+*.egg-info/
+.ipynb_checkpoints/
+# Generated submission artefacts are committed deliberately (see README),
+# so `generate/` is NOT ignored.
+scratch/
+*.pkl

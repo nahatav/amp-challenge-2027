@@ -1,0 +1,40 @@
+[project]
+name = "amp-design"
+version = "0.1.0"
+description = "AMP Challenge 2027 submission: de novo generative design of linear antimicrobial peptides"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Valmik Nahata", email = "valmik.nahata@gmail.com" }]
+requires-python = ">=3.10"
+
+# Inference dependencies only. Keep this set minimal and CPU-only so that
+# `uv sync` on the organizers' machine is fast and cannot drift.
+dependencies = [
+    "numpy>=1.26",
+    "levenshtein>=0.27.3",
+]
+
+[project.optional-dependencies]
+# Everything needed to retrain / evaluate. NOT required to reproduce the library.
+dev = [
+    "torch>=2.4",
+    "transformers>=4.44",
+    "scikit-learn>=1.4",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "seqme>=0.5.1",
+    "modlamp>=4.3",
+    "biopython>=1.83",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+generate = "amp_design.generate:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "amp_design"
+module-root = "src"
