@@ -30,11 +30,113 @@ with `data/antibacterial.fasta`, the exhaustive ≤0.80 Levenshtein-ratio
 constraint on the top-100 against all 39,448 references, and byte-level
 reproducibility across two runs.
 
+## The shape of the problem
+
+The competition asks for two artefacts, and **scores them with different
+things**. Optimising one objective for both is the central trap, and the design
+below exists to avoid it.
+
+```mermaid
+flowchart LR
+    LIB["<b>library.fasta</b><br/>50,000 sequences"]
+    TOP["<b>top.fasta</b><br/>100 sequences"]
+    P1["<b>Phase 1 — computational</b><br/>seqme: FBD · MMD · FKEA<br/>Precision/Recall · Conformity<br/>surrogate activity oracles"]
+    P2["<b>Phase 2 — wet lab</b><br/>25 drawn <i>at random</i> from the 100<br/>MIC across 20 strains + HC50<br/>score = <i>arithmetic mean</i>"]
+
+    LIB -->|scored by| P1
+    LIB -.->|must be a subset of| TOP
+    TOP -->|scored by| P2
+
+    P1 --- W1["wants: <b>realism</b><br/>look like the AMP distribution"]
+    P2 --- W2["wants: <b>efficacy</b><br/>look like AMPs that <i>worked</i>"]
+
+    style LIB fill:#e8f0fe,stroke:#4a76c7
+    style TOP fill:#fdeae8,stroke:#c75a4a
+    style W1 fill:#f6f6f6,stroke:#bbb
+    style W2 fill:#f6f6f6,stroke:#bbb
+```
+
+Because 25 of the 100 are drawn **uniformly at random** and the team score is the
+**mean**, a single outstanding peptide is worth nothing — every entry must be
+strong, and variance costs as much as a low mean.
+
+## Pipeline
+
+```mermaid
+flowchart TB
+    subgraph DATA["Public data"]
+        REF["antibacterial.fasta<br/>39,448 AMPs<br/><i>(also the exclusion list)</i>"]
+        DRAMP["DRAMP 4.0<br/>+1,964 new"]
+        GRAMPA["GRAMPA<br/>51,345 MICs"]
+        HEMO["HemoPI2<br/>1,926 HC50"]
+        BATTLE["BATTLE-AMP<br/>curated DBAASP"]
+    end
+
+    subgraph MODELS["Trained here"]
+        GEN["<b>Conditional transformer</b><br/>4.8M params, val ppl 5.53<br/>control tokens: length · charge<br/>· amphipathicity · activity"]
+        ORACLE["<b>Oracle ensemble</b><br/>MIC per species · HC50<br/>· AMP classifier"]
+        ENV["<b>Efficacy envelope</b><br/>KDE over 562 peptides<br/><i>measured</i> broadly active<br/>and non-haemolytic"]
+    end
+
+    POOL["Candidate pool<br/>~130,000<br/><i>unique · 8-50aa · no reference reuse</i>"]
+    BULK["65% sampled uniformly<br/><i>protects distributional metrics</i>"]
+    SHIFT["35% from the efficacy envelope<br/><i>adds potency character</i>"]
+    LIB2["<b>library.fasta</b> — 50,000"]
+    FILT["envelope filter → 3,000"]
+    RANK["rank: envelope + oracle + safety window<br/>× synthesizability gate"]
+    SCREEN["similarity screen ≤0.72 vs all 39,448<br/>+ pairwise diversity"]
+    TOP2["<b>top.fasta</b> — 100"]
+
+    REF --> GEN
+    DRAMP --> GEN
+    GRAMPA --> ORACLE
+    HEMO --> ORACLE
+    BATTLE --> ORACLE
+    GRAMPA --> ENV
+    HEMO --> ENV
+
+    GEN --> POOL
+    POOL --> BULK --> LIB2
+    POOL --> SHIFT --> LIB2
+    ENV --> SHIFT
+    LIB2 --> FILT --> RANK --> SCREEN --> TOP2
+    ENV --> FILT
+    ORACLE --> RANK
+
+    style GEN fill:#e8f0fe,stroke:#4a76c7
+    style ORACLE fill:#e8f0fe,stroke:#4a76c7
+    style ENV fill:#eaf5ea,stroke:#5a9e5a
+    style LIB2 fill:#e8f0fe,stroke:#4a76c7
+    style TOP2 fill:#fdeae8,stroke:#c75a4a
+```
+
+### Why the efficacy envelope exists
+
+Our trained MIC oracle ranks curated-database peptides well (Spearman 0.611
+held out) but **failed an external test**: on 46 peptides with MICs measured on
+the real competition panel it scored **0.062**. That is field-wide, not local —
+QMAP (2026) reports "poor performance for high-potency MIC regression", and
+BATTLE-AMP finds activity cliffs unresolved.
+
+So the pipeline leans on a population-level statistic instead, which makes no
+per-peptide claim. Taking every GRAMPA peptide measured against four or more
+species and keeping those active (≤16 µM) against 80% of them:
+
+| | length | charge | amphipathicity |
+|---|---|---|---|
+| Measured broadly active | 21 | **+5.0** | **0.47** |
+| Measured inactive | 15 | +2.1 | 0.41 |
+| Full AMP database | 18 | +3.0 | 0.36 |
+
+The database average sits at the *inactive* end on charge. Optimising toward the
+"typical" AMP is therefore not the same as optimising toward an effective one —
+and that distinction drives both the library blend and the top-100 filter.
+
 ## Method
 
-A conditional autoregressive transformer generates a candidate pool; a
-density-temperature rule selects the 50,000-sequence library; a trained oracle
-ensemble ranks the top-100.
+A conditional autoregressive transformer generates a candidate pool; the library
+is assembled as a uniform bulk plus an efficacy-shifted fraction; a trained
+oracle ensemble and the efficacy envelope together rank the top-100.
 
 ### Generator
 A 4.8M-parameter decoder-only transformer (d=256, 6 layers, 8 heads) over the

@@ -50,13 +50,17 @@ EFFICACY_REFERENCE = "data/broad_active_safe_reference.fasta"
 
 # Selection temperature for the library, chosen by the sweep in
 # eval/selection_sweep.py to trade ConformityScore against FBD/Recall.
-DEFAULT_TAU = 0.5
+DEFAULT_TAU = 0.0  # measured: tau>0 walks the library toward the weak end
 
 # Pool size as a multiple of the library. The transformer loses <1% to
 # deduplication and ~0% to the novelty filter, so the multiplier exists to give
 # the density-temperature selection something to select *from*, not to cover
 # attrition.
 DEFAULT_OVERSAMPLE = 2.0
+
+# Fraction of the library drawn from the efficacy envelope rather than sampled
+# uniformly. Chosen from a measured blend sweep (see pipeline.select_library).
+DEFAULT_POTENT_FRACTION = 0.35
 
 # Activity conditioning bucket (0-7). Bucket 7 corresponds to the most
 # canonically AMP-like decile of the training database under the adversarial
@@ -131,6 +135,7 @@ def main() -> None:
     parser.add_argument("--generator", default="transformer",
                         choices=["transformer", "markov"])
     parser.add_argument("--tau", type=float, default=DEFAULT_TAU)
+    parser.add_argument("--potent-fraction", type=float, default=DEFAULT_POTENT_FRACTION)
     parser.add_argument("--oversample", type=float, default=DEFAULT_OVERSAMPLE)
     parser.add_argument("--activity-bucket", type=int, default=DEFAULT_ACTIVITY_BUCKET)
     parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
@@ -158,10 +163,15 @@ def main() -> None:
         print(f"[3/6] Sampling pool of {target_pool:,}", flush=True)
     pool = collect_pool(sampler, index, target=target_pool, rng=rng, verbose=verbose)
 
+    efficacy_ref = read_sequences(find_resource(EFFICACY_REFERENCE))
+    envelope = scoring.EfficacyEnvelope(efficacy_ref)
     if verbose:
-        print(f"[4/6] Selecting library of {args.n_sequences:,} (tau={args.tau})", flush=True)
+        print(f"[4/6] Selecting library of {args.n_sequences:,} "
+              f"(tau={args.tau}, potent fraction={args.potent_fraction:.0%}, "
+              f"envelope from {len(efficacy_ref):,} measured broad-active peptides)", flush=True)
     library = select_library(
-        pool, density, n_select=args.n_sequences, tau=args.tau, rng=rng, verbose=verbose
+        pool, density, n_select=args.n_sequences, tau=args.tau, rng=rng,
+        envelope=envelope, potent_fraction=args.potent_fraction, verbose=verbose
     )
 
     if verbose:
@@ -170,11 +180,6 @@ def main() -> None:
     from .oracles import OracleEnsemble
 
     oracles = OracleEnsemble.load(oracle_path)
-    efficacy_ref = read_sequences(find_resource(EFFICACY_REFERENCE))
-    envelope = scoring.EfficacyEnvelope(efficacy_ref)
-    if verbose:
-        print(f"      efficacy envelope from {len(efficacy_ref):,} measured "
-              f"broad-active peptides", flush=True)
     top, stats = select_top(library, index, oracles, top_k=args.top_k,
                             envelope=envelope, verbose=verbose)
 
