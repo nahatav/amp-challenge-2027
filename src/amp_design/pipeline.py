@@ -22,11 +22,13 @@ Stage rationale, all of it measured rather than assumed (see RESULTS.md):
    concentrating in the former need not collapse the latter. `tau` is the knob;
    its value comes from the sweep in `eval/selection_sweep.py`.
 
-4. **Top-100 selection.** A cheap gate over the whole library, then the full
-   oracle panel on a shortlist, then a similarity screen against the reference,
-   then greedy diverse selection. Ordered this way because the oracle panel
-   costs ten gradient-boosted predictions per sequence and the similarity screen
-   is O(candidates x 39,448).
+4. **Top-100 selection.** The full oracle panel over the whole library, then a
+   similarity screen against the reference on the top shortlist, then greedy
+   diverse selection. The panel runs on all 50,000 rather than a cheap
+   pre-gate: featurising the library costs about two minutes and the
+   gradient-boosted predictions are microseconds per row, so gating would only
+   have risked discarding good candidates. The similarity screen stays on a
+   shortlist because it is O(candidates x 39,448) edit distances.
 """
 
 from __future__ import annotations
@@ -177,18 +179,18 @@ def select_top(
 
     short_idx = stable_argsort(composite, gated)[:min(shortlist_size, len(gated))]
 
-    # --- stage 3: similarity screen against the reference ------------------
+    # --- stage 2: similarity screen against the reference ------------------
     if verbose:
         print(f"  similarity-screening {len(short_idx):,} candidates", flush=True)
     passing = [int(i) for i in short_idx
-               if index.max_similarity(gated[int(i)]) <= TOP_SIMILARITY_MARGIN]
+               if not index.exceeds(gated[int(i)], TOP_SIMILARITY_MARGIN)]
     if len(passing) < top_k:
         raise RuntimeError(f"only {len(passing)} passed the similarity filter; need {top_k}")
 
     sub_seqs = [gated[i] for i in passing]
     sub_scores = composite[passing]
 
-    # --- stage 4: greedy diverse selection ---------------------------------
+    # --- stage 3: greedy diverse selection ---------------------------------
     picked = greedy_diverse_top(sub_seqs, sub_scores, n_select=top_k)
     top = [sub_seqs[i] for i in picked]
 

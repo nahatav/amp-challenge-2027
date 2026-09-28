@@ -1,7 +1,7 @@
 {
-  "mean_success_overall": 0.6831200001934603,
-  "mean_amp_probability": 0.43181873447216806,
-  "mean_pmic50": 0.8130603418641934,
-  "mean_safety_window": 1.064206505540155,
-  "mean_synthesizability": 0.8768218160032885
+  "mean_success_overall": 0.7576500732420136,
+  "mean_amp_probability": 0.5953582618218258,
+  "mean_pmic50": 0.6188280308804969,
+  "mean_safety_window": 1.2575336723033679,
+  "mean_synthesizability": 0.9321260581579958
 }

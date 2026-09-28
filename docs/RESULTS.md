@@ -306,3 +306,43 @@ Fixed by making it a **saturating multiplicative gate** rather than an additive
 term — it now penalises sequences that are not plausibly AMPs at all (where the
 MIC regressor extrapolates optimistically, having been fit only on actives) and
 is indifferent above ~0.45. The band separation above is post-fix.
+
+---
+
+## 9. A real defect the compliance check caught
+
+The first full 50,000-sequence run passed every organizer check, but the
+exhaustive similarity sweep reported a worst-case Levenshtein ratio of **0.783**
+against the reference database — compliant (the limit is 0.80) but far above the
+0.72 margin the pipeline is supposed to enforce. So the margin was silently not
+being applied.
+
+Cause: `ReferenceIndex` pruned candidate references with a length band derived
+for a threshold of 0.80, while the screen was being run at 0.72. The offending
+pair was `KWKFKIKFHFHKKW` (length 14) against `KKFKKFFKK` (length 9); the
+hardcoded band admitted reference lengths [10, 21] and so never scored the
+length-9 entry. A second, worse problem sat alongside it: a k-mer inverted index
+was also pruning references, and that is a *heuristic* — two sequences can
+exceed the threshold without sharing a k-mer — so it could drop true violations
+at any threshold.
+
+Fix: derive the band from the threshold, exactly. Since
+`ratio(a,b) = 1 - indel(a,b)/(|a|+|b|)` and `indel(a,b) >= ||a|-|b||`,
+
+    ratio(a, b) <= 2·min(|a|,|b|) / (|a|+|b|),
+
+so for threshold `t` only references with
+
+    t·na/(2−t) < nb < na·(2−t)/t
+
+can possibly reach it. At t = 0.72 and na = 14 that is (7.88, 24.89), which
+admits the length-9 reference. The k-mer index was removed entirely: exhaustive
+screening of a 2,000-candidate shortlist against all 39,448 references takes
+39 s, which is affordable, and correctness beats cleverness here.
+
+Effect: **7 of the 100 selected peptides** would be rejected under the corrected
+screen, so this was not a cosmetic issue — it changed the submitted list.
+
+`verify_top_similarity` deliberately does no pruning at all and does not share
+code with `ReferenceIndex`, so the final pre-write check cannot inherit a bug in
+the pruning logic. That separation is what surfaced this.
