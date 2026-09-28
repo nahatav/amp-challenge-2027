@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "AMP Challenge 2027 submission: de novo generative design of linear antimicrobial peptides"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Valmik Nahata", email = "valmik.nahata@gmail.com" }]
+authors = [{ name = "Valmik Nahata", email = "vnahata@ucsd.edu" }]
 requires-python = ">=3.10"
 
 # Inference dependencies only. Keep this set minimal and CPU-only so that

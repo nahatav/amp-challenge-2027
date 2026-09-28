@@ -346,3 +346,113 @@ screen, so this was not a cosmetic issue — it changed the submitted list.
 `verify_top_similarity` deliberately does no pruning at all and does not share
 code with `ReferenceIndex`, so the final pre-write check cannot inherit a bug in
 the pruning logic. That separation is what surfaced this.
+
+---
+
+## 10. External validation, and the redesign it forced
+
+### 10.1 The oracle does not transfer to de novo peptides
+
+The AMP-Diffusion starter kit ships `experimental/mic.csv`: **46 peptides x 11
+strains = 506 MIC measurements**, assayed by the de la Fuente lab on the actual
+competition panel. Zero overlap with our training corpus. A genuine external
+test set.
+
+| Predictor | Spearman vs measured success rate |
+|---|---|
+| Our predicted success rate | **0.062** |
+| Our predicted MIC50 | 0.102 |
+| Our composite | 0.241 |
+| Our safety-window head | 0.406 |
+| *(held-out GRAMPA, for contrast)* | *0.611* |
+
+n = 46, so SE ~ 0.15. This is "we cannot demonstrate transfer", not "the oracle
+is worthless" — but the predicted top-100 profile reported in section 8 must not
+be read as an absolute forecast.
+
+**This is field-wide, not a defect of ours.** QMAP (Lavertu et al., *Sci Rep*
+2026) — a homology-controlled benchmark for exactly MIC and HC50 regression —
+concludes "limited progress over six years, poor performance for high-potency
+MIC regression, and low predictability for hemolytic activity". BATTLE-AMP, from
+the organizing lab, finds activity cliffs unresolved by both ML and MD. A
+related study reports predictor accuracy swinging 67.9% -> 96.3% depending on
+which generator produced the test sequences.
+
+One caveat in the other direction: these 46 are *AMP-Diffusion's* peptides, not
+ours. Our library sits closer to the training distribution (FBD 0.90), so our
+own peptides may be more predictable. Unknowable without wet lab.
+
+### 10.2 What the measured data says to aim at
+
+If per-peptide prediction does not transfer, use population-level structure,
+which makes no per-peptide claim. Every GRAMPA peptide with MIC measured on >= 4
+species, keeping those active (<= 16 uM, the competition's own threshold)
+against >= 80% of them:
+
+| | n | length | charge | amphiphilicity | hydrophobicity |
+|---|---|---|---|---|---|
+| **Broad actives** | 1,279 | 21 | **+4.99** | **0.472** | -0.065 |
+| Broad inactives | 773 | 15 | +2.10 | 0.409 | +0.093 |
+| Broad active **and** non-haemolytic | 89 | 16 | +4.99 | **0.62** | -0.03 |
+
+Against that, our oracle-ranked top-100 sat at **charge +6.96, amphiphilicity
+0.308** — charge overshooting and amphiphilicity roughly half the target.
+
+**The cause is worth naming.** Optimising seqme's ConformityScore pulls toward
+the *typical* database AMP. Typical is not effective: broadly-active peptides
+are a high-amphiphilicity, moderate-charge **subset** of the database, not its
+centre. Phase 1 rewards typicality; Phase 2 rewards efficacy; we had been
+optimising the former for both.
+
+### 10.3 The efficacy envelope
+
+`scoring.EfficacyEnvelope` fits a KDE over standardised
+(charge, amphiphilicity, length, hydrophobicity) of the 1,175 measured
+broad-active, non-haemolytic peptides. Scoring by density under that cloud asks
+"does this look like the peptides that actually worked" — a far weaker and more
+transferable claim than predicting a MIC.
+
+Ranker comparison on the same 46 external peptides:
+
+| Ranker | rho |
+|---|---|
+| envelope + composite + safety window | **0.470** |
+| safety window alone | 0.406 |
+| envelope + safety window | 0.424 |
+| envelope alone | 0.247 |
+| composite alone | 0.241 |
+| predicted success alone | 0.062 |
+
+The blend separates the 46 into top-15 vs bottom-15 at **0.364 vs 0.170**
+measured success rate.
+
+**Guard against over-reading this.** n = 46, SE ~ 0.15, and roughly fifteen
+combinations were tried — the specific 0.470 could be selection effect. So the
+implementation uses **equal z-score weights with nothing fitted to these 46**.
+Averaging weak signals with independent rationales is the defensible move at
+this sample size.
+
+### 10.4 Filter, not summand
+
+Blending the envelope as one term of three moved envelope density 1.76 -> 2.46
+and charge 6.96 -> 5.96, but left amphiphilicity at 0.337 — the oracle terms
+dragged it back. Using the envelope as a **filter** on the candidate set, then
+blending within it, lands the profile on target:
+
+| envelope pool | length | charge | amphiphilicity | envelope density | safety window |
+|---|---|---|---|---|---|
+| none | 20.5 | 5.96 | 0.337 | 2.46 | **1.30** |
+| 1,500 | 22.0 | 4.49 | **0.451** | **3.30** | 0.95 |
+| 3,000 | 22.0 | 4.83 | 0.445 | 3.27 | 0.99 |
+| 8,000 | 22.0 | **4.99** | 0.439 | 3.18 | 1.06 |
+| *measured target* | *21.0* | *4.99* | *0.467* | — | — |
+
+Tighter filtering matches the measured profile better but costs safety window.
+Note that the oracle's *predicted* success rate also falls (0.767 -> 0.698) —
+but that is the metric which scored 0.062 externally, i.e. the least trustworthy
+number we have. Trading it for alignment with the empirically measured profile
+is the right direction, not a regression.
+
+The envelope rests on 1,279 measured peptides; the ranker comparison rests on
+46. That asymmetry is why the envelope earns the structural role and the learned
+scores only order within it.

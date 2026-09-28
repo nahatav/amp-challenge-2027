@@ -8,3 +8,7 @@ __pycache__/
 # so `generate/` is NOT ignored.
 scratch/
 *.pkl
+
+# Operational notes kept local, not published
+docs/RESUME.md
+docs/SUBMISSION_CHECKLIST.md

@@ -47,6 +47,13 @@ from .filters import ReferenceIndex, verify_top_similarity
 from .selection import greedy_diverse_top
 
 
+def _zscore(x: np.ndarray) -> np.ndarray:
+    """Standardise, tolerating a degenerate (constant) input."""
+    x = np.asarray(x, dtype=np.float64)
+    sd = x.std()
+    return (x - x.mean()) / sd if sd > 0 else np.zeros_like(x)
+
+
 def is_valid(seq: str) -> bool:
     return MIN_LENGTH <= len(seq) <= MAX_LENGTH and set(seq) <= AMINO_ACID_SET
 
@@ -138,6 +145,8 @@ def select_top(
     oracles,
     *,
     top_k: int,
+    envelope=None,
+    envelope_pool: int = 3000,
     gate_size: int | None = None,
     shortlist_size: int = 2000,
     verbose: bool = True,
@@ -166,18 +175,62 @@ def select_top(
         )[:min(gate_size, len(library))]
     ]
 
+    # --- stage 0: restrict to the measured-efficacy envelope ---------------
+    # The envelope is our most transfer-robust signal, and it rests on 1,279
+    # measured peptides rather than the 46 used to compare rankers. Using it as
+    # a *filter* rather than one term in a sum is what actually moves the
+    # selected profile onto the measured-active region: blended equally, the
+    # oracle terms dragged amphiphilicity back to 0.34 against a 0.49-0.74
+    # target. Robust signal defines the candidate set; the weaker learned
+    # signals order within it.
+    if envelope is not None and envelope_pool < len(gated):
+        env_all = envelope.log_density(gated)
+        keep = stable_argsort(env_all, gated)[:envelope_pool]
+        gated = [gated[i] for i in keep]
+        if verbose:
+            print(f"  efficacy envelope: kept top {len(gated):,} of "
+                  f"{len(library):,} by measured-active density", flush=True)
+
     if verbose:
         print(f"  running oracle panel on {len(gated):,} sequences "
               f"(10 species x MIC, HC50, AMP classifier)", flush=True)
     profile = oracles.panel_profile(gated)
     composite = oracles.composite_rank_score(gated, profile)
 
+    # --- blend three signals with independent rationales --------------------
+    # Ranked against 46 peptides with MICs measured on the real competition
+    # panel (external, zero training overlap), the individual signals score
+    # Spearman 0.241 (composite), 0.247 (envelope) and 0.406 (safety window),
+    # and the equal-weight blend 0.470. Weights are deliberately *equal*
+    # z-scores rather than fitted: n = 46 with many candidate combinations
+    # tested is far too little to fit weights without overfitting, and the
+    # standard error on any one of those correlations is about 0.15.
+    #
+    # Why blend rather than pick the best:
+    #   * envelope  - population profile of peptides that measurably worked
+    #                 broadly; makes no per-peptide claim, so it is the signal
+    #                 least exposed to the distribution shift that sank our
+    #                 MIC regressor externally (0.611 internal -> 0.062).
+    #   * composite - MIC-trained, which BATTLE-AMP finds beats binary
+    #                 classifiers regardless of architecture.
+    #   * safety    - the selectivity axis, and our strongest single external
+    #                 correlate. It is already inside `composite` at weight
+    #                 0.22; including it again deliberately up-weights it.
+    if envelope is not None:
+        env_density = envelope.log_density(gated)
+        blended = _zscore(env_density) + _zscore(composite) + _zscore(profile["safety_window"])
+        if verbose:
+            print(f"  blended ranking: envelope + composite + safety window", flush=True)
+    else:
+        blended = _zscore(composite)
+
     # Synthesizability is a gate on being testable at all: a peptide that fails
     # QC is never retested and becomes a dead slot in the 25-peptide draw.
     gated_synth = scoring.synthesizability(gated)
-    composite = composite * (0.5 + 0.5 * gated_synth)
+    blended = blended * (0.5 + 0.5 * gated_synth)
 
-    short_idx = stable_argsort(composite, gated)[:min(shortlist_size, len(gated))]
+    short_idx = stable_argsort(blended, gated)[:min(shortlist_size, len(gated))]
+    composite = blended
 
     # --- stage 2: similarity screen against the reference ------------------
     if verbose:
@@ -199,6 +252,8 @@ def select_top(
         raise RuntimeError(f"top list violates the similarity constraint: {violations[:3]}")
 
     stats = {
+        "mean_envelope_logdensity": float(
+            envelope.log_density(top).mean()) if envelope is not None else float("nan"),
         "mean_success_overall": float(profile["success_overall"][passing][picked].mean()),
         "mean_amp_probability": float(profile["amp_probability"][passing][picked].mean()),
         "mean_pmic50": float(profile["pmic50"][passing][picked].mean()),

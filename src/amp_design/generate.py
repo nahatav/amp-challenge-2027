@@ -44,6 +44,9 @@ REFERENCE_FASTA = "data/antibacterial.fasta"
 TRANSFORMER_CKPT = "checkpoint/transformer.npz"
 MARKOV_CKPT = "checkpoint/markov.npz"
 ORACLE_CKPT = "checkpoint/oracles.pkl"
+# Measured broad-spectrum-active, non-haemolytic peptides (GRAMPA + HemoPI2),
+# used to define the efficacy envelope for top-100 ranking.
+EFFICACY_REFERENCE = "data/broad_active_safe_reference.fasta"
 
 # Selection temperature for the library, chosen by the sweep in
 # eval/selection_sweep.py to trade ConformityScore against FBD/Recall.
@@ -167,7 +170,13 @@ def main() -> None:
     from .oracles import OracleEnsemble
 
     oracles = OracleEnsemble.load(oracle_path)
-    top, stats = select_top(library, index, oracles, top_k=args.top_k, verbose=verbose)
+    efficacy_ref = read_sequences(find_resource(EFFICACY_REFERENCE))
+    envelope = scoring.EfficacyEnvelope(efficacy_ref)
+    if verbose:
+        print(f"      efficacy envelope from {len(efficacy_ref):,} measured "
+              f"broad-active peptides", flush=True)
+    top, stats = select_top(library, index, oracles, top_k=args.top_k,
+                            envelope=envelope, verbose=verbose)
 
     out_dir = Path(entry_point)
     write_fasta(library, out_dir / LIBRARY_FILENAME)

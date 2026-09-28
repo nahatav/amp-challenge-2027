@@ -75,6 +75,82 @@ class ConformityDensity:
         return out
 
 
+class EfficacyEnvelope:
+    """Kernel density over the descriptor profile of *measured broadly-active* AMPs.
+
+    Why this exists, and why it is not just another learned oracle.
+
+    Our trained MIC regressor ranks curated-database peptides well (Spearman 0.611
+    held out) but **failed an external test**: on 46 de novo peptides with MICs
+    measured on the real competition panel, its rank correlation with measured
+    activity was 0.062. That is not a local defect — QMAP (2026) reports "limited
+    progress over six years, poor performance for high-potency MIC regression",
+    and BATTLE-AMP finds activity cliffs unresolved. Per-peptide potency
+    prediction does not currently transfer to de novo sequences.
+
+    A population-level statistic does transfer, because it makes no per-peptide
+    claim. We take every peptide in GRAMPA with MIC measured against at least
+    four species, keep those active (MIC <= 16 uM, the competition's own
+    threshold) against at least 80% of them, drop any with measured haemolysis
+    below 64 uM, and fit a KDE over their standardised
+    (charge, amphiphilicity, length, hydrophobicity). Scoring a candidate by
+    density under that cloud asks "does this look like the peptides that actually
+    worked", which is a far weaker and far more robust claim than "this peptide's
+    MIC is X".
+
+    The gap this closes is large. Broadly-active peptides have median
+    amphiphilicity 0.47 (0.62 for the non-haemolytic subset) and median charge
+    +5.0; our generated library sits at 0.27 and +2.0, and the oracle-ranked
+    top-100 at 0.31 and +7.0. Optimising ConformityScore pulled us toward the
+    *typical* database AMP, which is not the same thing as an *effective* one.
+    """
+
+    FEATURES = ("charge", "amphiphilicity", "length", "hydrophobicity")
+
+    def __init__(self, reference: list[str], bandwidth_scale: float = 1.0):
+        self.mean, self.std, self.points, self.bandwidth = None, None, None, None
+        pts = self._descriptors(reference)
+        self.mean = pts.mean(axis=0)
+        self.std = pts.std(axis=0)
+        self.std[self.std == 0] = 1.0
+        self.points = (pts - self.mean) / self.std
+
+        n, d = self.points.shape
+        # Silverman's rule, widened a little: the reference set is small and we
+        # want a smooth preference, not a hard basin.
+        self.bandwidth = bandwidth_scale * (n * (d + 2) / 4.0) ** (-1.0 / (d + 4))
+
+    @staticmethod
+    def _descriptors(sequences: list[str]) -> np.ndarray:
+        return np.stack(
+            [
+                D.net_charge(sequences),
+                D.hydrophobic_moment(sequences),
+                np.array([len(s) for s in sequences], dtype=np.float64),
+                D.mean_eisenberg(sequences),
+            ],
+            axis=1,
+        )
+
+    def log_density(self, sequences: list[str], block: int = 2048) -> np.ndarray:
+        query = (self._descriptors(sequences) - self.mean) / self.std
+        h2 = 2.0 * self.bandwidth**2
+        out = np.empty(len(query), dtype=np.float64)
+
+        for start in range(0, len(query), block):
+            chunk = query[start : start + block]
+            # Elementwise over the four dimensions: no BLAS, so the values are
+            # machine-independent (see amp_design.determinism).
+            d2 = np.zeros((chunk.shape[0], self.points.shape[0]), dtype=np.float64)
+            for k in range(chunk.shape[1]):
+                diff = chunk[:, k][:, None] - self.points[None, :, k]
+                d2 += diff * diff
+            m = -(d2 / h2)
+            mx = m.max(axis=1, keepdims=True)
+            out[start : start + block] = mx.squeeze(1) + np.log(np.exp(m - mx).sum(axis=1))
+        return out
+
+
 def potency_prior(sequences: list[str]) -> np.ndarray:
     """Physicochemical prior on antimicrobial potency, in [0, 1].
 
