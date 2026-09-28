@@ -1,0 +1,6 @@
+# The compliance script compares generated FASTA bytes across runs, and the
+# organizers diff the regenerated library against the committed one. Force LF
+# everywhere so a Windows checkout cannot introduce CRLF and break that match.
+* text=auto eol=lf
+*.fasta text eol=lf
+*.npz binary
