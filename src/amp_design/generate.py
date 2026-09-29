@@ -74,7 +74,8 @@ DEFAULT_TEMPERATURE = 1.0
 
 
 def build_sampler(kind: str, reference: list[str], verbose: bool,
-                  *, activity_bucket: int | None = None, temperature: float = 1.0):
+                  *, activity_bucket: int | None = None, temperature: float = 1.0,
+                  sampler_threads: int = 4, batch_size: int = 1024):
     """Return `sampler(n, rng) -> list[str]` for the chosen generator."""
     if kind == "transformer":
         from .neural import (
@@ -82,11 +83,23 @@ def build_sampler(kind: str, reference: list[str], verbose: bool,
             CHARGE_EDGES,
             LENGTH_EDGES,
             NumpyPeptideLM,
+            TorchCPUPeptideLM,
             bucketize,
             condition_tokens,
         )
 
-        model = NumpyPeptideLM.load(find_resource(TRANSFORMER_CKPT))
+        # Torch-CPU float64 by default: same arithmetic and the same sampling
+        # rule as the NumPy path (verified 512/512 identical sequences), but
+        # ~7x faster end to end. NumPy decodes one token at a time, which makes
+        # every matmul (batch, 1, d) @ (d, 3d) — dispatched as `batch` separate
+        # tiny BLAS calls. That difference is three and a half hours versus
+        # about twenty minutes, and it matters on the organizers' side too,
+        # since they run this entry point twice and diff the bytes.
+        ckpt = find_resource(TRANSFORMER_CKPT)
+        try:
+            model = TorchCPUPeptideLM.load(ckpt, threads=sampler_threads)
+        except ImportError:
+            model = NumpyPeptideLM.load(ckpt)
 
         # Length / charge / amphiphilicity conditioning is drawn from the
         # reference AMPs' own joint bucket distribution. Measurement showed
@@ -109,7 +122,7 @@ def build_sampler(kind: str, reference: list[str], verbose: bool,
             cond = condition_tokens(lb[pick], cb[pick], ab[pick], act)
             return model.sample(
                 n, rng, cond=cond, temperature=temperature,
-                batch_size=512, progress=verbose,
+                batch_size=batch_size, progress=verbose,
             )
 
         return sampler
@@ -139,6 +152,9 @@ def main() -> None:
     parser.add_argument("--oversample", type=float, default=DEFAULT_OVERSAMPLE)
     parser.add_argument("--activity-bucket", type=int, default=DEFAULT_ACTIVITY_BUCKET)
     parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    parser.add_argument("--threads", type=int, default=4,
+                        help="CPU threads for sampling; pinned for determinism.")
+    parser.add_argument("--sample-batch", type=int, default=1024)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -156,6 +172,7 @@ def main() -> None:
     sampler = build_sampler(
         args.generator, reference, verbose,
         activity_bucket=args.activity_bucket, temperature=args.temperature,
+        sampler_threads=args.threads, batch_size=args.sample_batch,
     )
 
     target_pool = int(args.n_sequences * args.oversample)

@@ -456,3 +456,69 @@ is the right direction, not a regression.
 The envelope rests on 1,279 measured peptides; the ranker comparison rests on
 46. That asymmetry is why the envelope earns the structural role and the learned
 scores only order within it.
+
+---
+
+## 11. Phase-1 scorecard against the declared baseline
+
+HydrAMP is one of two baselines the organizers ship and will publish seqme
+metrics for, so it is the only concrete "is our library good?" reference we
+have. Their actual 50,000-sequence library, from the starter kit, scored
+alongside ours and the usual controls (n = 3,000 per group, ESM2 t6_8M):
+
+| Metric | **OURS** | HydrAMP | AMPs (ref) | shuffled | UniProt | random |
+|---|---|---|---|---|---|---|
+| Uniqueness ↑ | 1.000 | 1.000 | 1.000 | 1.000 | 0.771 | 1.000 |
+| Diversity(5) ↑ | **0.864** | 0.803 | 0.854 | 0.856 | 0.813 | 0.869 |
+| Novelty ↑ | 1.000 | 1.000 | 0.000 | 0.997 | 0.951 | 1.000 |
+| FKEA ↑ | 651 | **1326** | 779 | 610 | 133 | 184 |
+| FBD[full] ↓ | **1.02** | 7.76 | 0.07 | 0.74 | 3.39 | 3.82 |
+| FBD[potent] ↓ | **3.62** | 6.63 | 1.95 | 3.23 | 5.40 | 8.04 |
+| Precision ↑ | **0.782** | 0.536 | 0.890 | 0.855 | 0.826 | 0.766 |
+| Recall ↑ | **0.731** | 0.286 | 0.883 | 0.788 | 0.445 | 0.335 |
+| Authenticity ↑ | 0.771 | **0.906** | 0.539 | 0.677 | 0.601 | 0.780 |
+| Conformity[full] ↑ | **0.580** | 0.419 | 0.500 | 0.504 | 0.355 | 0.478 |
+| Conformity[potent] ↑ | 0.269 | **0.385** | 0.305 | 0.295 | 0.102 | 0.085 |
+
+We beat the baseline decisively on fidelity: FBD 1.02 against 7.76, Recall 0.73
+against 0.29, Precision 0.78 against 0.54. HydrAMP's conditional VAE samples
+broadly from its latent prior, which buys enormous embedding-space spread
+(FKEA 1326, well above the reference's 779) at the cost of landing far off the
+AMP manifold.
+
+**Our one real weakness is coverage.** FKEA 651 and Recall 0.731 are both
+*below* the reference set itself (779 / 0.883). A small model trained on a
+narrow corpus learns the bulk of a distribution and misses its tails, which is
+exactly this signature. Two fixes are in flight: tau = 0 (already measured at
+FKEA 790 on its own) and pretraining a larger generator on 2.5M peptides.
+
+Note also Conformity[potent] 0.269 — below both the reference (0.305) and
+HydrAMP (0.385). That is the same under-charging problem: this library sits at
+charge +2.00 against a reference at +2.93 and HydrAMP at +4.99.
+
+---
+
+## 12. APEX-pathogen: obtained, tested, and kept at modest weight
+
+APEX-pathogen (Wan / de la Fuente, MIT) predicts MIC against 11 pathogens that
+are **11 of the competition's 20 strains at strain level**, and it is what the
+AMP-Diffusion baseline uses to rank its candidates. Worth testing properly.
+
+| Test | Spearman vs measured |
+|---|---|
+| APEX on 1,200 GRAMPA peptides (fair test) | **+0.271** |
+| APEX on the 46 AMP-Diffusion peptides | **−0.282** |
+
+The negative result needs care rather than acceptance: **those 46 peptides were
+selected by APEX** in the AMP-Diffusion study, so within that set the
+APEX-relevant variation has already been spent and only noise remains. It is a
+range-restriction artifact, not evidence APEX is broken. The same test is
+unbiased for our own signals, which never touched that selection — so our blend's
++0.470 there stands.
+
+Conclusion: APEX is a **modest independent signal** (~0.27), comparable to our
+envelope (0.247) and composite (0.241), not a replacement for them. It earns a
+place in the blend because it is genuinely independent — different training
+data, different architecture, fitted by the lab that will run our assays — and
+ensembling weak independent predictors is the right move when no single one is
+strong. It does not earn a dominant weight.

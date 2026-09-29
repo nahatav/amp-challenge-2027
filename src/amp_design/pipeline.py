@@ -74,12 +74,30 @@ def collect_pool(
     """
     pool: list[str] = []
     seen: set[str] = set()
-    batch = max(target // 3, 10_000)
+    drawn = 0
 
+    # Size each round to what is actually still needed, rather than using a
+    # fixed batch. A fixed `target // 3` overshoots by a third — four rounds to
+    # fill a three-round target — and sampling is the dominant cost of the whole
+    # run, so that waste is roughly 45 minutes on a 50,000-sequence library.
+    # Batch sizes stay a deterministic function of the counts so far, so the
+    # RNG is consumed in the same order on every run.
     for r in range(1, max_rounds + 1):
-        if len(pool) >= target:
+        remaining = target - len(pool)
+        if remaining <= 0:
             break
+
+        if drawn == 0:
+            batch = min(target, 25_000)
+        else:
+            # Attrition so far (duplicates + exact reference matches) is a good
+            # estimate of attrition ahead; 3% headroom avoids a tiny extra round.
+            yield_rate = max(len(pool) / drawn, 0.05)
+            batch = int(np.ceil(remaining / yield_rate * 1.03))
+            batch = max(min(batch, 60_000), 2_000)
+
         for seq in sampler(batch, rng):
+            drawn += 1
             if seq in seen or not is_valid(seq):
                 continue
             if index.is_exact_match(seq):
@@ -87,7 +105,8 @@ def collect_pool(
             seen.add(seq)
             pool.append(seq)
         if verbose:
-            print(f"  round {r}: pool = {len(pool):,} / {target:,}", flush=True)
+            print(f"  round {r}: pool = {len(pool):,} / {target:,} "
+                  f"(drawn {drawn:,})", flush=True)
 
     if len(pool) < target:
         raise RuntimeError(f"pool exhausted at {len(pool):,}, wanted {target:,}")
