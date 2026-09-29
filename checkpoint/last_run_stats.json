@@ -1,8 +1,8 @@
 {
-  "mean_envelope_logdensity": 2.0958192792526784,
-  "mean_success_overall": 0.6493578220246273,
-  "mean_amp_probability": 0.4392134352099743,
-  "mean_pmic50": 0.8873906921268778,
-  "mean_safety_window": 0.9563011797095604,
-  "mean_synthesizability": 0.9182134245099918
+  "mean_envelope_logdensity": 2.8958401350461105,
+  "mean_success_overall": 0.6764608561943024,
+  "mean_amp_probability": 0.5262494761779426,
+  "mean_pmic50": 0.8246949396469865,
+  "mean_safety_window": 1.0000342773397977,
+  "mean_synthesizability": 0.8891582002564858
 }

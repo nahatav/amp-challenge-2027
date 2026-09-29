@@ -522,3 +522,124 @@ place in the blend because it is genuinely independent — different training
 data, different architecture, fitted by the lab that will run our assays — and
 ensembling weak independent predictors is the right move when no single one is
 strong. It does not earn a dominant weight.
+
+---
+
+## 13. Temperature, and a self-inflicted coverage deficit
+
+Section 11 recorded our one weak Phase-1 metric as coverage: FKEA 651 against
+the reference's 779. Sampling at a mixture of temperatures was the obvious cheap
+fix. Measured on the v2 generator (n = 2,500 per group, ESM2 t6_8M):
+
+| | FKEA ↑ | FBD ↓ | Precision ↑ | Recall ↑ |
+|---|---|---|---|---|
+| **T = 1.00** | **723.5** | **0.804** | 0.780 | 0.763 |
+| T = 1.15 | 662.0 | 0.869 | 0.780 | 0.733 |
+| T = 1.30 | 601.3 | 1.016 | 0.782 | 0.742 |
+| mixture (0.95/1.1/1.25) | 672.5 | 0.931 | 0.787 | **0.784** |
+| *AMPs (reference)* | *722.8* | *0.085* | *0.892* | *0.894* |
+
+Two conclusions, one of which corrects section 11.
+
+**Temperature mixing does not help.** Raising T *lowers* FKEA (723 -> 601). The
+intuition that hotter sampling buys diversity is wrong here: the extra entropy
+moves sequences toward the random-peptide region, which ESM embeds as *fewer*
+effective modes, not more (uniform random scores FKEA 184). T = 1.0 is optimal
+and the mixture is strictly worse than it on FBD and FKEA.
+
+**The coverage deficit was ours, not the generator's.** The raw generator at
+T = 1.0 scores FKEA 723.5 against the reference's 722.8 — a dead match. The 651
+in section 11 came from the tau = 0.5 selection pulling the library toward the
+descriptor mode. Setting tau = 0 recovers it in full. This is the third distinct
+way that mode-seeking selection has cost us (see also the charge and
+amphiphilicity degradation in section 12's preamble), and it is now removed.
+
+**What remains is Precision: 0.780 against the reference's 0.892.** Precision is
+the fraction of generated sequences lying on the reference manifold, so the gap
+says a minority of our library sits genuinely off-distribution. That calls for a
+*floor* — discard the clearly off-manifold tail — rather than a *temperature*,
+which reweights the whole library toward its centre and costs coverage. Those
+are different operations and only the first targets the actual defect.
+
+---
+
+## 14. Two selection rules, tested side by side
+
+Both target the same remaining gap — Precision 0.78 against the reference's 0.89
+— and they behave completely differently. Measured on a clean 13,982-sequence
+pool sampled at T = 1.0 with no other filtering.
+
+### Floor: discard the low-conformity-density tail. Rejected.
+
+| drop | FKEA ↑ | FBD ↓ | Precision ↑ | Recall ↑ |
+|---|---|---|---|---|
+| **0%** | **743.9** | **0.889** | 0.785 | **0.759** |
+| 15% | 624.5 | 1.028 | 0.799 | 0.739 |
+| 30% | 558.5 | 1.257 | 0.800 | 0.718 |
+| 45% | 528.6 | 1.393 | **0.809** | 0.687 |
+
+Dropping 45% buys **+0.024 Precision** and costs **215 FKEA, 0.50 FBD and
+0.072 Recall**. The failure was predictable and was predicted before running:
+conformity density is centred on the all-AMP mode, so a floor is mode-seeking
+under another name — the fourth time that mechanism has cost us. No floor.
+
+### Potent fraction: replace part of the library from the efficacy envelope. Kept.
+
+| f | FKEA ↑ | FBD ↓ | Precision ↑ | Recall ↑ | Conf[potent] ↑ |
+|---|---|---|---|---|---|
+| 0% | 749.6 | 0.844 | 0.774 | 0.757 | 0.273 |
+| 25% | 712.6 | 0.860 | **0.798** | 0.740 | 0.305 |
+| **35%** | **757.1** | **0.834** | 0.788 | 0.753 | 0.309 |
+| 50% | 765.9 | 0.924 | 0.793 | 0.756 | **0.333** |
+| *AMPs (reference)* | *722.8* | *0.085* | *0.892* | *0.894* | *0.311* |
+
+At f = 0.35: the best FBD of any setting, FKEA **above** the reference
+(757 vs 723), and Conformity[potent] level with it (0.309 vs 0.311).
+
+**Why the two rules diverge.** A floor removes the tail and pulls mass toward a
+single existing mode, which lowers the effective mode count that FKEA measures.
+The potent fraction moves mass toward a *different* region of descriptor space,
+adding a mode rather than collapsing onto one. Same superficial shape — "select
+a subset by a density" — opposite effect on coverage. Only measurement
+distinguishes them.
+
+**Resulting library rule, final:** sample at T = 1.0, tau = 0, take 35% from the
+efficacy envelope and the rest uniformly, no floor, no other filtering. Every
+additional selection mechanism tried on top of this cost more than it returned.
+
+---
+
+## 15. Pretraining a larger generator: tested, rejected
+
+The scorecard's coverage gap looked like the signature of a small model on a
+narrow corpus, so the documented fix was tried in full: build a 2.5M-peptide
+corpus from SwissProt (in the range PepBERT uses, 1.97-19.2M), pretrain a
+14.24M-parameter transformer on it for 6 epochs (val ppl 17.7 -> 13.34), then
+fine-tune on the AMP corpus with conditioning (early stop at epoch 45,
+val ppl 5.321 against v2's 5.533).
+
+Perplexity improved. Everything that matters did not.
+
+| | Div(5) | FKEA ↑ | FBD[full] ↓ | FBD[potent] ↓ | Precision ↑ | Recall ↑ | Conf[full] ↑ |
+|---|---|---|---|---|---|---|---|
+| **v2 (4.8M, AMPs only)** | 0.863 | **757.3** | **0.810** | **2.990** | **0.798** | 0.746 | 0.507 |
+| v3 (14.2M, pretrained) | 0.862 | 642.4 | 0.946 | 3.376 | 0.783 | **0.767** | **0.515** |
+| *AMPs (reference)* | *0.854* | *737.5* | *0.071* | *1.901* | *0.894* | *0.876* | *0.502* |
+
+v3 loses FKEA by 115 points and FBD by 0.14, winning only marginally on Recall
+and Conformity — while costing 3x the inference time (9.5x slower to sample on
+GPU; the entry point samples on CPU).
+
+**Why lower perplexity did not mean a better library.** Perplexity rewards
+putting probability mass on the training sequences. FKEA and FBD reward
+*covering the right region* of embedding space. Pretraining on general protein
+fragments moved the model toward generic protein statistics, and fine-tuning on
+41k AMPs did not fully specialise it back — leaving a library slightly smeared
+toward generic peptides, which shows up as a lower effective mode count and a
+worse distributional match.
+
+Shipping v2. The pretraining pipeline
+(`scripts/build_pretrain_corpus.py`, `scripts/pretrain_transformer.py`) and the
+v3 checkpoint are kept in the repository: the negative result is part of the
+evidence for the design, and it is the kind of thing that is otherwise expensive
+to re-derive.
